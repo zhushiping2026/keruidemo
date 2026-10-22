@@ -1,0 +1,7 @@
+{
+  "name": "atoms-demo",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  }
+}
