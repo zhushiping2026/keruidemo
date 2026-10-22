@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: keruidemo
+    runtime: node
+    plan: free
+    buildCommand: "npm install"
+    startCommand: "node server.js"
+    envVars:
+      - key: LLM_API_KEY
+        sync: false

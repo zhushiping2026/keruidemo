@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Atoms Demo — NL → Web App</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="auth-overlay" class="auth-overlay" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+    <div class="auth-card">
+      <p class="auth-brand">ATOMS</p>
+      <h1 id="auth-title" class="auth-title">用自然语言生成可运行 Web 应用</h1>
+      <p class="auth-sub">输入邮箱即可进入（本地演示模式）</p>
+      <label class="field">
+        <span>邮箱</span>
+        <input type="email" id="auth-email" placeholder="you@example.com" autocomplete="email" />
+      </label>
+      <button type="button" class="btn btn-primary btn-block" id="btn-enter">进入工作台</button>
+      <p class="auth-config-hint" id="auth-config-hint" hidden></p>
+    </div>
+  </div>
+
+  <div id="app" class="app is-locked" hidden>
+    <header class="topbar">
+      <div class="topbar-brand">
+        <span class="logo-mark" aria-hidden="true"></span>
+        <span class="logo-text">ATOMS</span>
+        <span class="logo-tag">Demo</span>
+        <span class="version-badge" id="version-badge" title="当前项目已保存版本数">v0</span>
+      </div>
+      <div class="topbar-actions">
+        <label class="project-select-wrap">
+          <span class="sr-only">项目</span>
+          <select id="project-select" class="model-select" title="切换项目"></select>
+        </label>
+        <label class="model-select-wrap">
+          <span class="sr-only">模型</span>
+          <select id="model-select" class="model-select" title="模型"></select>
+        </label>
+        <button type="button" class="btn btn-ghost" id="btn-new-project">新建项目</button>
+        <button type="button" class="btn btn-ghost" id="btn-export">导出 .html</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="pane pane-left" id="pane-left" aria-label="对话与代码">
+        <div class="pane-tabs" role="tablist">
+          <button type="button" class="tab is-active" role="tab" aria-selected="true" data-tab="chat">对话</button>
+          <button type="button" class="tab" role="tab" aria-selected="false" data-tab="code">代码</button>
+          <button type="button" class="tab" role="tab" aria-selected="false" data-tab="versions">版本</button>
+        </div>
+
+        <div class="pane-body">
+          <div id="panel-chat" class="panel is-active" role="tabpanel">
+            <div class="chat-list" id="chat-list">
+              <div class="chat-bubble chat-bubble--system">
+                <p>描述你想要的页面，例如「做一个暗黑风个人主页」。</p>
+                <p class="chat-hint">可连续对话修改；上下文仅携带最近 3 轮指令摘要 + 当前完整代码。预览成功后自动存版本。</p>
+              </div>
+            </div>
+            <div class="prompt-tags" aria-label="推荐 Prompt">
+              <button type="button" class="chip" data-prompt="做一个简洁的个人主页，深色背景，含姓名、简介和三个社交链接">落地页</button>
+              <button type="button" class="chip" data-prompt="做一个数据看板页面，含标题和三个指标卡片，纯前端静态数据">看板</button>
+              <button type="button" class="chip" data-prompt="做一个简单的点击计数小游戏，有分数和重置按钮">小游戏</button>
+            </div>
+            <form class="composer" id="composer">
+              <textarea
+                id="prompt-input"
+                rows="3"
+                placeholder="用自然语言描述你的应用… Enter 发送，Shift+Enter 换行"
+              ></textarea>
+              <div class="composer-bar">
+                <span class="composer-hint">Enter 发送 · Shift+Enter 换行</span>
+                <div class="composer-actions">
+                  <button type="button" class="btn btn-ghost" id="btn-stop" hidden>停止</button>
+                  <button type="submit" class="btn btn-primary" id="btn-send">生成</button>
+                </div>
+              </div>
+            </form>
+          </div>
+
+          <div id="panel-code" class="panel" role="tabpanel" hidden>
+            <pre class="code-view" id="code-view" tabindex="0"><code id="code-text"></code></pre>
+          </div>
+
+          <div id="panel-versions" class="panel" role="tabpanel" hidden>
+            <div class="versions-head">
+              <p class="versions-title">版本时间轴</p>
+              <p class="versions-sub">按时间倒序 · 上限 50 · 回滚将丢弃之后的版本</p>
+            </div>
+            <ul class="versions-list" id="versions-list"></ul>
+          </div>
+        </div>
+      </section>
+
+      <div
+        class="splitter"
+        id="splitter"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整左右分屏宽度"
+        tabindex="0"
+      ></div>
+
+      <section class="pane pane-right" id="pane-right" aria-label="实时预览">
+        <div class="preview-toolbar">
+          <span class="preview-label">预览</span>
+          <div class="preview-controls">
+            <div class="seg" role="group" aria-label="视口">
+              <button type="button" class="seg-btn is-active" id="btn-viewport-pc" data-viewport="pc">PC</button>
+              <button type="button" class="seg-btn" id="btn-viewport-mobile" data-viewport="mobile">移动 375</button>
+            </div>
+            <button type="button" class="btn btn-ghost btn-icon" id="btn-refresh" title="刷新预览" aria-label="刷新预览">↻</button>
+            <button type="button" class="btn btn-ghost btn-icon" id="btn-fullscreen" title="全屏预览" aria-label="全屏预览">⛶</button>
+          </div>
+        </div>
+        <div class="preview-stage" id="preview-stage">
+          <div class="preview-skeleton" id="preview-skeleton" hidden>
+            <div class="skel-line"></div>
+            <div class="skel-line skel-line--short"></div>
+            <div class="skel-block"></div>
+            <p class="skel-caption">编码中…</p>
+          </div>
+          <div class="preview-frame-wrap" id="preview-frame-wrap" data-viewport="pc">
+            <iframe
+              id="preview-iframe"
+              class="preview-iframe"
+              title="沙箱预览"
+              sandbox="allow-scripts allow-same-origin"
+              referrerpolicy="no-referrer"
+            ></iframe>
+          </div>
+        </div>
+        <div class="console-drawer" id="console-drawer">
+          <div class="console-bar">
+            <button type="button" class="console-toggle" id="btn-console-toggle" aria-expanded="false">
+              控制台 <span class="console-count" id="console-count">0</span>
+            </button>
+            <div class="console-bar-actions">
+              <button type="button" class="btn btn-ghost btn-sm" id="btn-console-clear">清空</button>
+              <button type="button" class="btn btn-primary btn-sm" id="btn-ai-fix" hidden>发给 AI 修复</button>
+            </div>
+          </div>
+          <div class="console-body" id="console-body" hidden>
+            <ul class="console-log" id="console-log"></ul>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast-root" class="toast-root" aria-live="polite"></div>
+
+  <div id="confirm-modal" class="modal-overlay" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+      <h2 id="confirm-title" class="modal-title">确认回滚？</h2>
+      <p class="modal-body" id="confirm-body">回滚后将恢复该版本代码与对话上下文，并删除其后的版本。</p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="confirm-cancel">取消</button>
+        <button type="button" class="btn btn-primary" id="confirm-ok">确认回滚</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="cloud.js"></script>
+  <script src="extract.js"></script>
+  <script src="store.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
