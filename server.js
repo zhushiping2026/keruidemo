@@ -1,9 +1,10 @@
 /**
- * 零依赖静态服务 + DeepSeek OpenAI 兼容代理
+ * 静态服务 + DeepSeek /v1 代理 + 邮箱验证码登录
  *
- * LLM_API_KEY 通过环境变量配置，本地运行示例：
- *   Windows:  set LLM_API_KEY=sk-xxx && node server.js
- *   macOS/Linux: LLM_API_KEY=sk-xxx node server.js
+ * 环境变量：
+ *   LLM_API_KEY
+ *   SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS / SMTP_FROM
+ *   （可选）SMTP_SECURE=true|false  默认 465 为 SSL
  */
 "use strict";
 
@@ -11,6 +12,10 @@ const http = require("http");
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
+const otp = require("./otp");
+const mail = require("./mail");
+
+loadDotEnv();
 
 const ROOT = __dirname;
 const PORT = Number(process.env.PORT) || 5173;
@@ -23,7 +28,13 @@ const ALLOWED_EXT = new Set([
   ".ico",
   ".json",
 ]);
-const DENY_NAMES = new Set(["server.js", "package.json"]);
+const DENY_NAMES = new Set([
+  "server.js",
+  "package.json",
+  "mail.js",
+  "otp.js",
+  "render.yaml",
+]);
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -34,6 +45,67 @@ const MIME = {
   ".ico": "image/x-icon",
   ".json": "application/json; charset=utf-8",
 };
+
+function loadDotEnv() {
+  const envPath = path.join(__dirname, ".env");
+  if (!fs.existsSync(envPath)) return;
+  const lines = fs.readFileSync(envPath, "utf8").split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line || line.charAt(0) === "#") continue;
+    const eq = line.indexOf("=");
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    let val = line.slice(eq + 1).trim();
+    if (
+      (val.charAt(0) === '"' && val.charAt(val.length - 1) === '"') ||
+      (val.charAt(0) === "'" && val.charAt(val.length - 1) === "'")
+    ) {
+      val = val.slice(1, -1);
+    }
+    if (!Object.prototype.hasOwnProperty.call(process.env, key)) {
+      process.env[key] = val;
+    }
+  }
+}
+
+function json(res, status, obj) {
+  const body = JSON.stringify(obj);
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+  });
+  res.end(body);
+}
+
+function readBody(req) {
+  return new Promise(function (resolve, reject) {
+    const chunks = [];
+    let size = 0;
+    req.on("data", function (c) {
+      size += c.length;
+      if (size > 1e6) {
+        reject(new Error("body_too_large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", function () {
+      const raw = Buffer.concat(chunks).toString("utf8");
+      if (!raw) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(raw));
+      } catch (_) {
+        reject(new Error("invalid_json"));
+      }
+    });
+    req.on("error", reject);
+  });
+}
 
 function resolveSafe(urlPath) {
   let pathname;
@@ -82,12 +154,7 @@ function serveStatic(req, res) {
 function proxyDeepSeek(req, res) {
   const apiKey = process.env.LLM_API_KEY;
   if (!apiKey) {
-    res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(
-      JSON.stringify({
-        error: "LLM_API_KEY is not set on the server",
-      })
-    );
+    json(res, 500, { error: "LLM_API_KEY is not set on the server" });
     return;
   }
 
@@ -99,6 +166,9 @@ function proxyDeepSeek(req, res) {
   };
   if (req.headers["content-type"]) {
     headers["Content-Type"] = req.headers["content-type"];
+  }
+  if (req.headers["content-length"]) {
+    headers["Content-Length"] = req.headers["content-length"];
   }
 
   const proxyReq = https.request(
@@ -118,7 +188,6 @@ function proxyDeepSeek(req, res) {
       } else {
         outHeaders["Cache-Control"] = "no-cache";
       }
-      // SSE：直接管道，不缓冲全文
       res.writeHead(proxyRes.statusCode || 502, outHeaders);
       proxyRes.pipe(res);
     }
@@ -126,22 +195,90 @@ function proxyDeepSeek(req, res) {
 
   proxyReq.on("error", function (err) {
     if (!res.headersSent) {
-      res.writeHead(502, { "Content-Type": "application/json; charset=utf-8" });
+      json(res, 502, {
+        error: "upstream_error",
+        message: String(err.message || err),
+      });
+    } else {
+      res.end();
     }
-    res.end(
-      JSON.stringify({ error: "upstream_error", message: String(err.message || err) })
-    );
   });
 
   req.pipe(proxyReq);
 }
 
+async function handleSendCode(req, res) {
+  try {
+    const body = await readBody(req);
+    if (!mail.smtpConfigured()) {
+      json(res, 503, {
+        error: "smtp_not_configured",
+        message: "服务器未配置 SMTP，无法发送验证码",
+      });
+      return;
+    }
+    const issued = otp.issue(body.email);
+    await mail.sendMail({
+      to: issued.email,
+      subject: "Atoms Demo 登录验证码",
+      text:
+        "您的验证码是：" +
+        issued.code +
+        "\n\n" +
+        issued.expiresInSec +
+        " 秒内有效。如非本人操作请忽略。",
+    });
+    json(res, 200, {
+      ok: true,
+      email: issued.email,
+      expiresInSec: issued.expiresInSec,
+    });
+  } catch (e) {
+    const msg = (e && e.message) || "发送失败";
+    const status =
+      e &&
+      (e.code === "cooldown" ||
+        e.code === "rate_limit" ||
+        e.code === "invalid_email")
+        ? 400
+        : 500;
+    json(res, status, { error: (e && e.code) || "send_failed", message: msg });
+  }
+}
+
+async function handleVerifyLogin(req, res) {
+  try {
+    const body = await readBody(req);
+    const result = otp.verify(body.email, body.code);
+    json(res, 200, {
+      ok: true,
+      user: { id: "otp:" + result.email, email: result.email },
+    });
+  } catch (e) {
+    json(res, 400, {
+      error: (e && e.code) || "verify_failed",
+      message: (e && e.message) || "验证失败",
+    });
+  }
+}
+
 const server = http.createServer(function (req, res) {
-  const urlPath = req.url || "/";
+  const urlPath = (req.url || "/").split("?")[0];
+
+  if (urlPath === "/api/send-code" && req.method === "POST") {
+    handleSendCode(req, res);
+    return;
+  }
+  if (urlPath === "/api/login" && req.method === "POST") {
+    handleVerifyLogin(req, res);
+    return;
+  }
+
   if (urlPath === "/v1" || urlPath.indexOf("/v1/") === 0) {
     proxyDeepSeek(req, res);
     return;
   }
+
   if (req.method !== "GET" && req.method !== "HEAD") {
     res.writeHead(405, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Method Not Allowed");
@@ -150,9 +287,25 @@ const server = http.createServer(function (req, res) {
   serveStatic(req, res);
 });
 
+server.on("error", function (err) {
+  if (err && err.code === "EADDRINUSE") {
+    console.error(
+      "端口 " + PORT + " 已被占用。请先结束旧进程再启动，或换 PORT。"
+    );
+  } else {
+    console.error(err);
+  }
+  process.exit(1);
+});
+
 server.listen(PORT, "0.0.0.0", function () {
   console.log("atoms-demo listening on http://0.0.0.0:" + PORT);
   if (!process.env.LLM_API_KEY) {
     console.warn("warning: LLM_API_KEY is not set; /v1 proxy will return 500");
+  }
+  if (!mail.smtpConfigured()) {
+    console.warn(
+      "warning: SMTP not set; /api/send-code will return 503 (need SMTP_HOST/USER/PASS)"
+    );
   }
 });

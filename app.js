@@ -77,6 +77,8 @@ p{margin:0;opacity:.8}
   const els = {
     authOverlay: document.getElementById("auth-overlay"),
     authEmail: document.getElementById("auth-email"),
+    authCode: document.getElementById("auth-code"),
+    btnSendCode: document.getElementById("btn-send-code"),
     btnEnter: document.getElementById("btn-enter"),
     authConfigHint: document.getElementById("auth-config-hint"),
     app: document.getElementById("app"),
@@ -893,10 +895,57 @@ p{margin:0;opacity:.8}
     }
   }
 
+  let sendCodeCooldownTimer = null;
+
+  function setSendCodeCooldown(sec) {
+    if (sendCodeCooldownTimer) {
+      clearInterval(sendCodeCooldownTimer);
+      sendCodeCooldownTimer = null;
+    }
+    if (!els.btnSendCode) return;
+    let left = Math.max(0, Number(sec) || 0);
+    if (left <= 0) {
+      els.btnSendCode.disabled = false;
+      els.btnSendCode.textContent = "发送验证码";
+      return;
+    }
+    els.btnSendCode.disabled = true;
+    els.btnSendCode.textContent = left + "s";
+    sendCodeCooldownTimer = setInterval(function () {
+      left -= 1;
+      if (left <= 0) {
+        clearInterval(sendCodeCooldownTimer);
+        sendCodeCooldownTimer = null;
+        els.btnSendCode.disabled = false;
+        els.btnSendCode.textContent = "发送验证码";
+      } else {
+        els.btnSendCode.textContent = left + "s";
+      }
+    }, 1000);
+  }
+
+  async function handleSendCode() {
+    if (!els.btnSendCode || els.btnSendCode.disabled) return;
+    els.btnSendCode.disabled = true;
+    try {
+      await window.AtomsCloud.sendLoginCode(els.authEmail.value);
+      toast("验证码已发送，请查收邮箱");
+      setSendCodeCooldown(60);
+      if (els.authCode) els.authCode.focus();
+    } catch (e) {
+      els.btnSendCode.disabled = false;
+      els.btnSendCode.textContent = "发送验证码";
+      toast((e && e.message) || "发送失败", { error: true, sticky: true });
+    }
+  }
+
   async function handleEnterWorkspace() {
     els.btnEnter.disabled = true;
     try {
-      window.AtomsCloud.signInLocal(els.authEmail.value);
+      await window.AtomsCloud.signInWithCode(
+        els.authEmail.value,
+        els.authCode && els.authCode.value
+      );
       toast("已进入工作台");
       enterWorkspace();
       await loadModels();
@@ -912,16 +961,27 @@ p{margin:0;opacity:.8}
     if (!window.AtomsCloud.isConfigured()) {
       els.authConfigHint.hidden = false;
       els.authConfigHint.textContent =
-        "请用 server.js 启动，并设置环境变量 LLM_API_KEY";
+        "请用 server.js 启动，并设置 LLM_API_KEY 与 SMTP_*";
     }
 
+    if (els.btnSendCode) {
+      els.btnSendCode.addEventListener("click", handleSendCode);
+    }
     els.btnEnter.addEventListener("click", handleEnterWorkspace);
     els.authEmail.addEventListener("keydown", function (e) {
       if (e.key === "Enter") {
         e.preventDefault();
-        handleEnterWorkspace();
+        handleSendCode();
       }
     });
+    if (els.authCode) {
+      els.authCode.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          handleEnterWorkspace();
+        }
+      });
+    }
   }
 
   function initTabs() {
